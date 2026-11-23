@@ -1,0 +1,17 @@
+# Build output
+/bin/
+*.exe
+
+# Test / coverage
+*.test
+*.out
+coverage.html
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local Claude settings / personal preferences
+.claude/settings.local.json
+CLAUDE.local.md
