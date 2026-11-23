@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// fakeEnv turns a map into a lookupFunc, so tests never touch real env vars.
+// fakeEnv turns a map into a lookupFunc.
 func fakeEnv(m map[string]string) lookupFunc {
 	return func(key string) (string, bool) {
 		v, ok := m[key]
@@ -21,8 +21,8 @@ func TestDefaultRulesMatchSpec(t *testing.T) {
 		TimeoutRateThreshold:  0.3,
 		MinSampleSize:         100,
 		BlockLevel:            0.95,
-		RecoveryStep:          0.1,
-		Window:                time.Minute,
+		RecoveryStepSize:      0.1,
+		EvaluationWindow:      time.Minute,
 		MaxAccumulatedWindows: 5,
 	}
 	if r != want {
@@ -49,8 +49,8 @@ func TestLoadRulesOverrides(t *testing.T) {
 		EnvTimeoutRateThreshold:  "0.2",
 		EnvMinSampleSize:         "50",
 		EnvBlockLevel:            "0.9",
-		EnvRecoveryStep:          "0.3",
-		EnvWindow:                "10s",
+		EnvRecoveryStepSize:      "0.3",
+		EnvEvaluationWindow:      "10s",
 		EnvMaxAccumulatedWindows: "3",
 	}))
 	if err != nil {
@@ -61,8 +61,8 @@ func TestLoadRulesOverrides(t *testing.T) {
 		TimeoutRateThreshold:  0.2,
 		MinSampleSize:         50,
 		BlockLevel:            0.9,
-		RecoveryStep:          0.3,
-		Window:                10 * time.Second,
+		RecoveryStepSize:      0.3,
+		EvaluationWindow:      10 * time.Second,
 		MaxAccumulatedWindows: 3,
 	}
 	if r != want {
@@ -72,20 +72,20 @@ func TestLoadRulesOverrides(t *testing.T) {
 
 func TestLoadRulesReportsAllParseErrors(t *testing.T) {
 	_, err := loadRules(fakeEnv(map[string]string{
-		EnvMinSampleSize: "lots",
-		EnvWindow:        "1 minute",
+		EnvMinSampleSize:    "lots",
+		EnvEvaluationWindow: "1 minute",
 	}))
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	for _, key := range []string{EnvMinSampleSize, EnvWindow} {
+	for _, key := range []string{EnvMinSampleSize, EnvEvaluationWindow} {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error should mention %s, got: %v", key, err)
 		}
 	}
 }
 
-// Table-driven test: each case mutates valid defaults into one invalid rule.
+// Each case breaks one rule of otherwise valid defaults.
 func TestValidateRejectsOutOfRange(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -97,9 +97,10 @@ func TestValidateRejectsOutOfRange(t *testing.T) {
 		{"min sample zero", func(r *Rules) { r.MinSampleSize = 0 }},
 		{"block level one cuts traffic to zero", func(r *Rules) { r.BlockLevel = 1 }},
 		{"block level zero", func(r *Rules) { r.BlockLevel = 0 }},
-		{"recovery step zero", func(r *Rules) { r.RecoveryStep = 0 }},
-		{"recovery step above block level", func(r *Rules) { r.RecoveryStep = 0.96 }},
-		{"window zero", func(r *Rules) { r.Window = 0 }},
+		{"recovery step size zero", func(r *Rules) { r.RecoveryStepSize = 0 }},
+		{"recovery step size below rate precision", func(r *Rules) { r.RecoveryStepSize = 1e-7 }},
+		{"recovery step size above block level", func(r *Rules) { r.RecoveryStepSize = 0.96 }},
+		{"evaluation window zero", func(r *Rules) { r.EvaluationWindow = 0 }},
 		{"max accumulated zero", func(r *Rules) { r.MaxAccumulatedWindows = 0 }},
 	}
 	for _, tc := range cases {

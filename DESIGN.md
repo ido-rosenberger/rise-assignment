@@ -56,7 +56,10 @@
 ## Decisions on ambiguous / unspecified cases
 
 - **Low-sample window during recovery: accumulate.** A blocked buyer gets only 5% of traffic, so its windows are often below min sample. Treating them as clean would unblock a buyer we never measured; freezing would leave a low-traffic buyer blocked forever. Instead, a low-sample window is merged with the following ones until the merged sample reaches min sample, then judged as one window.
-- **Accumulation is capped** (default 5 windows), so old data does not decide current health.
+- **Accumulation is capped** (default 5 windows), so old data does not decide current health. If the cap is reached and the merged sample is still below min sample (very low traffic), it can never block (spec). It steps down if it has calls and is under both thresholds, and holds the rate if it reaches a threshold or has zero calls. A zero-traffic buyer is unaffected by its rate anyway, and holding means a stats outage cannot silently unblock buyers.
+- **Both thresholds reached:** reason is `failure_rate`. Same rate either way.
+- **Block level lowered by config:** a stored rate above it is clamped first, since it would skip more traffic than the configured maximum allows.
+- **A window that alone reaches min sample is judged alone**, discarding pending small windows. Merging would let older data dilute a failing window (escaping a block the spec requires) or skew a clean one.
 - **Accumulated samples >= min sample may block.** The spec forbids blocking on too-small samples; a merged sample of 100+ is no longer too small.
 - **Unknown buyer => open (`0.0`).** Buyers are revenue; not throttled until measured.
 - **Redis unreachable => pods keep last known state** (fail-open); the hot path never waits on Redis.
