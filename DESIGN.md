@@ -29,13 +29,16 @@
 - **Evaluator core** (`internal/evaluator`): pure function `Evaluate(prev, windowStats, rules) -> next`. No IO, so all spec rules are unit-tested directly.
 - **Throttler** (`throttler/`, public package): in-process Go library inside each auction pod. Exposes `ShouldCall(buyerID) bool` and `Record(buyerID, result)`. Public because in production other services' repos would import it; it defines the small interfaces it needs from a store.
 - **Store**: Redis implementation of those interfaces. The part pods use must be public too, since a public API cannot require internal types.
-- **Evaluator service** (`cmd/evaluator`): ticker that runs the core for every known buyer once per window.
+- **Evaluator service** (`cmd/evaluator`, loop in `internal/evaluator/runner.go`): wakes at each window end + grace and runs the core for every known buyer.
 - **Auction pod / simulator** (`cmd/...`): demo binaries for docker-compose.
 
 ## Data flow
 
 1. **Stats up.** `Record` increments per-buyer in-memory atomic counters. A flush loop swaps them to zero every second and pushes the deltas to Redis with pipelined `HINCRBY` on `stats:{minute}` (fields `{buyer}:total`, `{buyer}:failed`, `{buyer}:timeouts`). Flush ticks are aligned to whole seconds and the evaluation window is a multiple of the flush interval, so every window boundary is a flush tick: each flush interval lies inside one window, and `Record` never reads the clock. Cost: requests in the few milliseconds between a boundary and the flush wake-up count in the previous window. Failed sends are kept and retried, then dropped once the evaluator has judged that window. Every pod writes the same key, so Redis does the cross-pod aggregation atomically. The key expires after a few windows.
-2. **Decide.** After a minute closes (+ short grace for the last flushes), the evaluator reads the whole minute with one `HGETALL`, plus `throttle:state` and `throttle:eval`. It evaluates every buyer present in either (a buyer with no calls this minute still gets judged as an empty window), then writes both hashes in one `MULTI` so pods never see half an update.
+2. **Decide.** After a minute closes (+ short grace for the last flushes), the evaluator reads the whole minute with one `HGETALL`, plus `throttle:state` and `throttle:eval`. It evaluates every buyer present in either (a buyer with no calls this minute still gets judged as an empty window), then writes both hashes, bumps `throttle:version` and sets `throttle:last_window` in one `MULTI`, so pods never see half an update.
+   - **Catch-up:** every closed window after `throttle:last_window` is evaluated, oldest first (each step uses the previous result, so the newest data is applied last). After downtime the result equals that of an evaluator that never stopped; bounded by the 10-window stats TTL. A restart inside a window does not evaluate it twice.
+   - **Grace** (default 5s) must exceed the pods' flush interval + store timeout, so a window's last flushes land before it is judged.
+   - A failed read or save is logged and retried at the next tick; `last_window` only moves on success.
 
 **Why three keys:** they have different writers, readers and rates. Pods read only the small `throttle:state`; evaluator internals (`throttle:eval`) can change without touching the pod contract; per-window counters need TTL, state must not expire. One hash per window (not per buyer) means no buyer registry and one read per evaluation. Trade-off: under Redis Cluster a single key lives on one shard; per-buyer keys would spread load there.
 3. **State down.** A refresh loop (~1s) in each pod reads `throttle:version`. Only when it differs from the last seen version (or on startup) does the pod read `throttle:state`, build a new immutable map `buyer -> rate`, and swap it in atomically. The evaluator increments the version in the same `MULTI` as the state write, so a new version always means new state is readable. Result: pods do one tiny `GET` per second and a full read about once per window, so Redis load stays flat as pods and buyers grow.
@@ -52,7 +55,7 @@
 
 - **Single writer**: only the evaluator writes throttle state, so pods cannot disagree on decisions, only lag (by up to one refresh interval).
 - **Shared input**: all pods' stats land in the same Redis keys, so the evaluator sees global health, not one pod's view.
-- **Optional leader lock** (`SET NX` with TTL) makes a second evaluator instance safe.
+- **One evaluator instance.** Running two would apply a window twice. Possible hardening: `WATCH throttle:last_window` around the save, so a second instance's transaction aborts.
 - Pod clock skew smaller than the grace period does not affect which minute a stat lands in.
 
 ## Decisions on ambiguous / unspecified cases
