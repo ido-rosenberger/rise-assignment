@@ -3,12 +3,13 @@ package evaluator
 import (
 	"testing"
 
+	"github.com/ido-rosenberger/rise-assignment/buyer"
 	"github.com/ido-rosenberger/rise-assignment/internal/config"
 )
 
 // c builds Stats tersely: c(total, failed, timeouts).
-func c(total, failed, timeouts int64) Stats {
-	return Stats{Total: total, Failed: failed, Timeouts: timeouts}
+func c(total, failed, timeouts int64) buyer.Stats {
+	return buyer.Stats{Total: total, Failed: failed, Timeouts: timeouts}
 }
 
 // Shorthand states used across cases.
@@ -26,7 +27,7 @@ func TestEvaluate(t *testing.T) {
 	cases := []struct {
 		name        string
 		prev        State
-		windowStats Stats
+		windowStats buyer.Stats
 		want        State
 	}{
 		// Block rules.
@@ -129,7 +130,7 @@ func TestFullRecoverySequence(t *testing.T) {
 func TestRecoveryTimeline(t *testing.T) {
 	rules := config.DefaultRules()
 	steps := []struct {
-		windowStats Stats
+		windowStats buyer.Stats
 		want        float64
 	}{
 		{c(1000, 100, 0), 0},    // healthy

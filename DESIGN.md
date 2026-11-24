@@ -33,7 +33,7 @@
 
 ## Data flow
 
-1. **Stats up.** `Record` increments in-memory atomic counters, bucketed by wall-clock minute. A flush loop (~1s) pushes deltas to Redis with pipelined `HINCRBY` on `stats:{minute}` (fields `{buyer}:total`, `{buyer}:failed`, `{buyer}:timeout`). Every pod writes the same key, so Redis does the cross-pod aggregation atomically. The key expires after a few windows.
+1. **Stats up.** `Record` increments per-buyer in-memory atomic counters. A flush loop swaps them to zero every second and pushes the deltas to Redis with pipelined `HINCRBY` on `stats:{minute}` (fields `{buyer}:total`, `{buyer}:failed`, `{buyer}:timeouts`). Flush ticks are aligned to whole seconds and the evaluation window is a multiple of the flush interval, so every window boundary is a flush tick: each flush interval lies inside one window, and `Record` never reads the clock. Cost: requests in the few milliseconds between a boundary and the flush wake-up count in the previous window. Failed sends are kept and retried, then dropped once the evaluator has judged that window. Every pod writes the same key, so Redis does the cross-pod aggregation atomically. The key expires after a few windows.
 2. **Decide.** After a minute closes (+ short grace for the last flushes), the evaluator reads the whole minute with one `HGETALL`, plus `throttle:state` and `throttle:eval`. It evaluates every buyer present in either (a buyer with no calls this minute still gets judged as an empty window), then writes both hashes in one `MULTI` so pods never see half an update.
 
 **Why three keys:** they have different writers, readers and rates. Pods read only the small `throttle:state`; evaluator internals (`throttle:eval`) can change without touching the pod contract; per-window counters need TTL, state must not expire. One hash per window (not per buyer) means no buyer registry and one read per evaluation. Trade-off: under Redis Cluster a single key lives on one shard; per-buyer keys would spread load there.
@@ -43,7 +43,8 @@
 
 - No network, no locks: one atomic pointer load, one map lookup, one random number compare (`rand < rate` => skip).
 - Rate `0.0` returns `true` without drawing a random number.
-- `Record` only increments atomic counters; Redis IO happens in background goroutines.
+- `Record` only increments two atomic counters (no clock read, no allocation); Redis IO happens in a background goroutine.
+- Both maps (buyer -> throttle rate, buyer -> counters) are immutable snapshots behind an atomic pointer; a change builds a new map and swaps the pointer (copy-on-write), so readers never lock. Measured: `ShouldCall` ~1 ns, `Record` ~40 ns under 20-goroutine contention on one buyer, 0 allocations.
 - Probabilistic skipping needs no shared counter, so pods and goroutines never coordinate per request. Cost: 95% is exact on average, not per request.
 
 ## Consistency across pods

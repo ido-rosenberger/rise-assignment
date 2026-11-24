@@ -3,25 +3,9 @@ package evaluator
 import (
 	"math"
 
+	"github.com/ido-rosenberger/rise-assignment/buyer"
 	"github.com/ido-rosenberger/rise-assignment/internal/config"
 )
-
-// Stats are a buyer's request outcomes over one or more evaluation windows.
-// Failed and Timeouts are disjoint: each request is ok, failed, or a timeout.
-type Stats struct {
-	Total    int64
-	Failed   int64
-	Timeouts int64
-}
-
-// Add returns the sum of two Stats.
-func (s Stats) Add(o Stats) Stats {
-	return Stats{
-		Total:    s.Total + o.Total,
-		Failed:   s.Failed + o.Failed,
-		Timeouts: s.Timeouts + o.Timeouts,
-	}
-}
 
 // Reason explains a buyer's current throttle rate. Values match the "reason"
 // field of GET /state.
@@ -43,7 +27,7 @@ type State struct {
 	Reason       Reason
 	// Accumulated holds the stats of recent windows that were below the
 	// minimum sample size and have not been judged yet.
-	Accumulated Stats
+	Accumulated buyer.Stats
 	// AccumulatedWindows is the number of windows merged into Accumulated.
 	AccumulatedWindows int
 }
@@ -60,7 +44,7 @@ type State struct {
 //  3. Too small, cap not reached: keep accumulating, throttle rate unchanged.
 //  4. Too small, cap reached: never block. Step down only if the sample has
 //     requests and is under both thresholds; otherwise hold. Accumulation resets.
-func Evaluate(prev State, windowStats Stats, rules config.Rules) State {
+func Evaluate(prev State, windowStats buyer.Stats, rules config.Rules) State {
 	// The block level may have been lowered since the state was stored, or
 	// the stored state may be corrupt.
 	throttleRate := math.Max(0, math.Min(prev.ThrottleRate, rules.BlockLevel))
@@ -96,7 +80,7 @@ func Evaluate(prev State, windowStats Stats, rules config.Rules) State {
 
 // violation reports which threshold the sample reaches, or ReasonNone.
 // Failure rate is checked first, so it wins when both are reached.
-func violation(s Stats, rules config.Rules) Reason {
+func violation(s buyer.Stats, rules config.Rules) Reason {
 	if s.Total == 0 {
 		return ReasonNone
 	}
