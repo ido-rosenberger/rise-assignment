@@ -1,0 +1,70 @@
+# Demo: Redis, one evaluator, two auction pods, and a simulator (traffic +
+# fake buyers). Start with `docker compose up --build`; watch the logs.
+#
+# Windows are 10s here (spec default 1m) so a full block -> recovery cycle
+# takes ~2 minutes. Every service reads the same THROTTLE_EVALUATION_WINDOW.
+
+x-throttle-env: &throttle-env
+  REDIS_ADDR: redis:6379
+  THROTTLE_EVALUATION_WINDOW: 10s
+  # Spec defaults, listed so they are easy to change:
+  THROTTLE_FAILURE_RATE_THRESHOLD: "0.7"
+  THROTTLE_TIMEOUT_RATE_THRESHOLD: "0.3"
+  THROTTLE_MIN_SAMPLE_SIZE: "100"
+  THROTTLE_BLOCK_LEVEL: "0.95"
+  THROTTLE_RECOVERY_STEP_SIZE: "0.1"
+  THROTTLE_MAX_ACCUMULATED_WINDOWS: "5"
+
+x-app: &app
+  build: . # same Dockerfile for every app service; layers are cached
+  restart: unless-stopped
+  depends_on:
+    redis:
+      condition: service_healthy
+
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
+  evaluator:
+    <<: *app
+    command: ["evaluator"]
+    environment:
+      <<: *throttle-env
+      EVALUATOR_GRACE: 3s
+
+  pod-1:
+    <<: *app
+    command: ["auctionpod"]
+    environment:
+      <<: *throttle-env
+      POD_NAME: pod-1
+      BUYER_BASE_URL: http://simulator:9000
+      BUYER_TIMEOUT: 150ms
+
+  pod-2:
+    <<: *app
+    command: ["auctionpod"]
+    environment:
+      <<: *throttle-env
+      POD_NAME: pod-2
+      BUYER_BASE_URL: http://simulator:9000
+      BUYER_TIMEOUT: 150ms
+
+  simulator:
+    <<: *app
+    command: ["simulator"]
+    depends_on:
+      - pod-1
+      - pod-2
+    environment:
+      SIM_CONFIG: /config/simulator.json
+    volumes:
+      - ./simulator.json:/config/simulator.json:ro
+    ports:
+      - "9000:9000" # fake buyers + live control API (curl from the host)

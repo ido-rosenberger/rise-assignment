@@ -1,0 +1,33 @@
+{
+  "rps": 200,
+  "pods": ["http://pod-1:8080", "http://pod-2:8080"],
+  "buyers": [
+    {
+      "id": "buyer_steady",
+      "participation": 1.0,
+      "failure_rate": 0.02,
+      "timeout_rate": 0.01
+    },
+    {
+      "id": "buyer_flaky",
+      "participation": 1.0,
+      "failure_rate": 0.02,
+      "timeout_rate": 0.0,
+      "incident": { "start": "30s", "end": "90s", "failure_rate": 0.9, "timeout_rate": 0.0 }
+    },
+    {
+      "id": "buyer_slow",
+      "participation": 1.0,
+      "failure_rate": 0.0,
+      "timeout_rate": 0.02,
+      "incident": { "start": "60s", "end": "120s", "failure_rate": 0.0, "timeout_rate": 0.6 }
+    },
+    {
+      "id": "buyer_tiny",
+      "participation": 0.02,
+      "failure_rate": 0.0,
+      "timeout_rate": 0.0,
+      "incident": { "start": "30s", "end": "90s", "failure_rate": 0.9, "timeout_rate": 0.0 }
+    }
+  ]
+}
