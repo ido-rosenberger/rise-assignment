@@ -6,10 +6,11 @@
 
 ```
                  +-------------------- Redis --------------------+
-                 |  stats:{minute}   (hash: "{buyer}:total|failed|timeout" -> count, TTL)
+                 |  stats:{minute}   (hash: "{buyer}:total|failed|timeouts" -> count, TTL)
                  |  throttle:state   (hash: buyer -> {rate, reason})   read by pods
                  |  throttle:eval    (hash: buyer -> accumulation)     evaluator-only
                  |  throttle:version (counter, +1 on every state write)
+                 |  throttle:last_window (last evaluated window start)
                  +-----------------------------------------------+
           HINCRBY every ~1s ^      | HGETALL every ~1s     ^ read closed minute
                             |      v                       | write new state
