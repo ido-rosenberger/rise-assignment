@@ -72,6 +72,12 @@
 - **Thresholds use `>=`** ("reaches its threshold").
 - **Step rounding:** each recovery step is rounded and clamped at `0.0`, so `0.95 -> 0.85 -> ... -> 0.05 -> 0.0` without float drift.
 
+## Observability
+
+- **`GET /state`** on the evaluator returns every buyer's `buyer_id`, `throttle_rate` and `reason` (spec format), read from Redis, the source of truth. Each buyer also carries `last_window`: start, total, failed, timeouts, failure rate and timeout rate of the last evaluated window. That covers the per-buyer metrics (throttle rate, error rates, request counts) without a metrics stack.
+- **Logs:** the evaluator logs every throttle state change (window stats, accumulated stats, old -> new rate, reason). Pods log per-buyer traffic each window: attempted, called, skipped, ok, failed, timeouts.
+- **Trade-off:** `/state` is a snapshot; there is no history or alerting. In production this would be a Prometheus `/metrics` endpoint on the evaluator and pods (skipped-call counts exist only in pods).
+
 ## Trade-offs
 
 - **Polling vs push**: ~1s staleness accepted; evaluator only changes state once per minute. Pub/sub would cut lag but adds missed-message cases.

@@ -37,6 +37,8 @@ services:
     environment:
       <<: *throttle-env
       EVALUATOR_GRACE: 3s
+    ports:
+      - "${STATE_PORT:-8088}:8080" # GET /state at http://localhost:8088/state
 
   pod-1:
     <<: *app
@@ -67,4 +69,4 @@ services:
     volumes:
       - ./simulator.json:/config/simulator.json:ro
     ports:
-      - "9000:9000" # fake buyers + live control API (curl from the host)
+      - "${SIMULATOR_PORT:-9000}:9000" # fake buyers + live control API (curl from the host)

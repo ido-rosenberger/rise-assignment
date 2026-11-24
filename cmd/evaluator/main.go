@@ -5,14 +5,17 @@
 // Environment:
 //
 //	REDIS_ADDR                 Redis address (default localhost:6379)
+//	LISTEN_ADDR                HTTP address for GET /state (default :8080)
 //	EVALUATOR_GRACE            wait after a window ends before evaluating it (default 5s)
 //	THROTTLE_*                 throttling rules, see internal/config
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -44,26 +47,38 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	redisAddr := config.String("REDIS_ADDR", "localhost:6379")
+	listenAddr := config.String("LISTEN_ADDR", ":8080")
 
 	client := redis.NewClient(&redis.Options{Addr: redisAddr})
 	defer client.Close()
+	st := store.New(client, log)
 
 	runner, err := evaluator.NewRunner(evaluator.RunnerConfig{
 		Rules:             rules,
 		Grace:             grace,
 		MaxCatchUpWindows: schema.StatsRetentionWindows,
 		Logger:            log,
-	}, store.New(client, log))
+	}, st)
 	if err != nil {
 		return fmt.Errorf("create runner: %w", err)
 	}
+
+	mux := http.NewServeMux()
+	mux.Handle("GET /state", evaluator.StateHandler(st))
+	server := &http.Server{Addr: listenAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
 	// Stop cleanly on Ctrl+C or `docker stop` (SIGTERM).
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	serverErr := make(chan error, 1)
+	go func() { serverErr <- server.ListenAndServe() }()
+	runnerDone := make(chan struct{})
+	go func() { runner.Run(ctx); close(runnerDone) }()
+
 	log.Info("evaluator started",
 		"redis", redisAddr,
+		"listen", listenAddr,
 		"window", rules.EvaluationWindow,
 		"grace", grace,
 		"failure_rate_threshold", rules.FailureRateThreshold,
@@ -72,7 +87,20 @@ func run(log *slog.Logger) error {
 		"block_level", rules.BlockLevel,
 		"recovery_step_size", rules.RecoveryStepSize,
 		"max_accumulated_windows", rules.MaxAccumulatedWindows)
-	runner.Run(ctx)
+
+	select {
+	case <-ctx.Done():
+	case err := <-serverErr:
+		stop()
+		<-runnerDone
+		return fmt.Errorf("http server: %w", err)
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Warn("http shutdown", "err", err)
+	}
+	<-runnerDone
 	log.Info("evaluator stopped")
 	return nil
 }
