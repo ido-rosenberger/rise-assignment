@@ -20,6 +20,8 @@ func Duration(key string, def time.Duration) (time.Duration, error) {
 	return parseEnv(key, def, time.ParseDuration)
 }
 
+// parseEnv is the one place env vars are parsed: def when unset, def and an
+// error naming the variable when invalid.
 func parseEnv[T any](key string, def T, parse func(string) (T, error)) (T, error) {
 	raw, ok := os.LookupEnv(key)
 	if !ok {

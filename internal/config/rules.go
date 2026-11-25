@@ -5,7 +5,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"time"
 )
@@ -65,25 +64,18 @@ func DefaultRules() Rules {
 // LoadRules starts from DefaultRules, overrides any value set in the
 // environment, and validates the result.
 func LoadRules() (Rules, error) {
-	return loadRules(os.LookupEnv)
-}
-
-// lookupFunc matches os.LookupEnv, so tests can pass a fake environment.
-type lookupFunc func(key string) (string, bool)
-
-func loadRules(lookup lookupFunc) (Rules, error) {
 	r := DefaultRules()
 
 	// Collect every parse error so a misconfigured deployment shows all
 	// problems at once.
 	var errs []error
-	override(lookup, EnvFailureRateThreshold, parseFloat, &r.FailureRateThreshold, &errs)
-	override(lookup, EnvTimeoutRateThreshold, parseFloat, &r.TimeoutRateThreshold, &errs)
-	override(lookup, EnvMinSampleSize, parseInt64, &r.MinSampleSize, &errs)
-	override(lookup, EnvBlockLevel, parseFloat, &r.BlockLevel, &errs)
-	override(lookup, EnvRecoveryStepSize, parseFloat, &r.RecoveryStepSize, &errs)
-	override(lookup, EnvEvaluationWindow, time.ParseDuration, &r.EvaluationWindow, &errs)
-	override(lookup, EnvMaxAccumulatedWindows, strconv.Atoi, &r.MaxAccumulatedWindows, &errs)
+	override(EnvFailureRateThreshold, parseFloat, &r.FailureRateThreshold, &errs)
+	override(EnvTimeoutRateThreshold, parseFloat, &r.TimeoutRateThreshold, &errs)
+	override(EnvMinSampleSize, parseInt64, &r.MinSampleSize, &errs)
+	override(EnvBlockLevel, parseFloat, &r.BlockLevel, &errs)
+	override(EnvRecoveryStepSize, parseFloat, &r.RecoveryStepSize, &errs)
+	override(EnvEvaluationWindow, time.ParseDuration, &r.EvaluationWindow, &errs)
+	override(EnvMaxAccumulatedWindows, strconv.Atoi, &r.MaxAccumulatedWindows, &errs)
 	if err := errors.Join(errs...); err != nil {
 		return Rules{}, err
 	}
@@ -94,16 +86,12 @@ func loadRules(lookup lookupFunc) (Rules, error) {
 	return r, nil
 }
 
-// override replaces *dst with the parsed env value when key is set.
-func override[T any](lookup lookupFunc, key string, parse func(string) (T, error), dst *T, errs *[]error) {
-	raw, ok := lookup(key)
-	if !ok {
-		return
-	}
-	v, err := parse(raw)
+// override replaces *dst with the env value of key when it is set and valid;
+// a parse error is collected into errs.
+func override[T any](key string, parse func(string) (T, error), dst *T, errs *[]error) {
+	v, err := parseEnv(key, *dst, parse)
 	if err != nil {
-		*errs = append(*errs, fmt.Errorf("%s=%q: %w", key, raw, err))
-		return
+		*errs = append(*errs, err)
 	}
 	*dst = v
 }

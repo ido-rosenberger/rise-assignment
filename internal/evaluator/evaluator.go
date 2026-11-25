@@ -45,35 +45,54 @@ type State struct {
 //  4. Too small, cap reached: never block. Step down only if the sample has
 //     requests and is under both thresholds; otherwise hold. Accumulation resets.
 func Evaluate(prev State, windowStats buyer.Stats, rules config.Rules) State {
-	// The block level may have been lowered since the state was stored, or
-	// the stored state may be corrupt.
-	throttleRate := math.Max(0, math.Min(prev.ThrottleRate, rules.BlockLevel))
+	throttleRate := clampThrottleRate(prev.ThrottleRate, rules)
+	sample, windows := pickSample(prev, windowStats, rules)
 
-	sample, windows := windowStats, 1
-	if windowStats.Total < rules.MinSampleSize {
-		sample = prev.Accumulated.Add(windowStats)
-		windows = prev.AccumulatedWindows + 1
-	}
-
-	if sample.Total >= rules.MinSampleSize {
-		if reason := violation(sample, rules); reason != ReasonNone {
-			return State{ThrottleRate: rules.BlockLevel, Reason: reason}
-		}
-		return stepDown(throttleRate, rules)
-	}
-
-	if windows < rules.MaxAccumulatedWindows {
+	switch {
+	case sample.Total >= rules.MinSampleSize: // rule 2
+		return judge(throttleRate, sample, rules)
+	case windows < rules.MaxAccumulatedWindows: // rule 3
 		return State{
 			ThrottleRate:       throttleRate,
 			Reason:             prev.Reason,
 			Accumulated:        sample,
 			AccumulatedWindows: windows,
 		}
+	default: // rule 4
+		return capReached(throttleRate, prev.Reason, sample, rules)
 	}
+}
 
-	// Cap reached, sample still below MinSampleSize.
+// clampThrottleRate keeps a stored rate inside [0, BlockLevel]: the block
+// level may have been lowered since the state was stored, or the stored state
+// may be corrupt.
+func clampThrottleRate(rate float64, rules config.Rules) float64 {
+	return math.Max(0, math.Min(rate, rules.BlockLevel))
+}
+
+// pickSample is rule 1. It returns the stats to judge and how many windows
+// they span.
+func pickSample(prev State, windowStats buyer.Stats, rules config.Rules) (buyer.Stats, int) {
+	if windowStats.Total >= rules.MinSampleSize {
+		return windowStats, 1
+	}
+	return prev.Accumulated.Add(windowStats), prev.AccumulatedWindows + 1
+}
+
+// judge is rule 2: block on a violation, otherwise step down.
+func judge(throttleRate float64, sample buyer.Stats, rules config.Rules) State {
+	if reason := violation(sample, rules); reason != ReasonNone {
+		return State{ThrottleRate: rules.BlockLevel, Reason: reason}
+	}
+	return stepDown(throttleRate, rules)
+}
+
+// capReached is rule 4: the sample is still below MinSampleSize after
+// MaxAccumulatedWindows windows. It never blocks; it steps down only if the
+// sample has requests and is under both thresholds, otherwise it holds.
+func capReached(throttleRate float64, reason Reason, sample buyer.Stats, rules config.Rules) State {
 	if sample.Total == 0 || violation(sample, rules) != ReasonNone {
-		return State{ThrottleRate: throttleRate, Reason: prev.Reason} // hold
+		return State{ThrottleRate: throttleRate, Reason: reason}
 	}
 	return stepDown(throttleRate, rules)
 }

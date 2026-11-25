@@ -9,16 +9,16 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/ido-rosenberger/rise-assignment/internal/config"
+	"github.com/ido-rosenberger/rise-assignment/internal/serve"
 	"github.com/ido-rosenberger/rise-assignment/internal/simulator"
 )
 
@@ -28,6 +28,7 @@ func main() {
 		log.Error("simulator stopped", "err", err)
 		os.Exit(1)
 	}
+	log.Info("simulator stopped")
 }
 
 func run(log *slog.Logger) error {
@@ -47,10 +48,6 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	serverErr := make(chan error, 1)
-	go func() { serverErr <- server.ListenAndServe() }()
-	go buyers.LogIncidents(ctx)
-
 	gen := &simulator.Generator{
 		Pods:   cfg.Pods,
 		RPS:    cfg.RPS,
@@ -62,19 +59,14 @@ func run(log *slog.Logger) error {
 		Log:         log,
 		MaxInFlight: 1000,
 	}
-	go gen.Run(ctx, summaryEvery)
-	log.Info("simulator started", "listen", listenAddr, "rps", cfg.RPS, "pods", cfg.Pods, "buyers", len(cfg.Buyers))
 
-	select {
-	case <-ctx.Done():
-	case err := <-serverErr:
-		return fmt.Errorf("http server: %w", err)
-	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Warn("http shutdown", "err", err)
-	}
-	log.Info("simulator stopped")
-	return nil
+	var background sync.WaitGroup
+	background.Go(func() { buyers.LogIncidents(ctx) })
+	background.Go(func() { gen.Run(ctx, summaryEvery) })
+
+	log.Info("simulator started", "listen", listenAddr, "rps", cfg.RPS, "pods", cfg.Pods, "buyers", len(cfg.Buyers))
+	err = serve.Until(ctx, server)
+	stop() // if the server failed, stop traffic too
+	background.Wait()
+	return err
 }

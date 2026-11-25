@@ -18,8 +18,7 @@ type fakeStore struct {
 	mu      sync.Mutex
 	stats   map[time.Time]map[string]buyer.Stats
 	states  map[string]State
-	last    time.Time
-	hasLast bool
+	last    time.Time // zero: nothing evaluated yet
 	saved   []time.Time
 	saveErr error
 }
@@ -34,20 +33,14 @@ func (f *fakeStore) WindowStats(_ context.Context, w time.Time) (map[string]buye
 	return f.stats[w], nil
 }
 
-func (f *fakeStore) States(context.Context) (map[string]State, error) {
+func (f *fakeStore) Snapshot(context.Context) (Snapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make(map[string]State, len(f.states))
+	states := make(map[string]State, len(f.states))
 	for k, v := range f.states {
-		out[k] = v
+		states[k] = v
 	}
-	return out, nil
-}
-
-func (f *fakeStore) LastWindow(context.Context) (time.Time, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.last, f.hasLast, nil
+	return Snapshot{States: states, LastWindow: f.last}, nil
 }
 
 func (f *fakeStore) SaveStates(_ context.Context, w time.Time, states map[string]State) error {
@@ -56,7 +49,7 @@ func (f *fakeStore) SaveStates(_ context.Context, w time.Time, states map[string
 	if f.saveErr != nil {
 		return f.saveErr
 	}
-	f.states, f.last, f.hasLast = states, w, true
+	f.states, f.last = states, w
 	f.saved = append(f.saved, w)
 	return nil
 }
@@ -138,7 +131,7 @@ func TestEvaluatePendingWindows(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newFakeStore()
 			if tc.last != nil {
-				store.last, store.hasLast = *tc.last, true
+				store.last = *tc.last
 			}
 			r := newTestRunner(t, store, tc.now)
 			if err := r.EvaluatePending(context.Background()); err != nil {
@@ -192,7 +185,7 @@ func TestEvaluateWindowCoversAllBuyers(t *testing.T) {
 // Catch-up applies windows in order, so each builds on the previous result.
 func TestCatchUpChainsStates(t *testing.T) {
 	store := newFakeStore()
-	store.last, store.hasLast = minute(5), true
+	store.last = minute(5)
 	store.stats[minute(6)] = map[string]buyer.Stats{"b1": {Total: 100, Failed: 80}} // block
 	for m := 7; m <= 9; m++ {
 		store.stats[minute(m)] = map[string]buyer.Stats{"b1": {Total: 100}} // 3 clean

@@ -44,11 +44,15 @@ func (t *Throttler) nextFlushTick() time.Time {
 }
 
 // flush moves the counters into the unsent stats of the window containing
-// intervalStart, then sends every unsent window. A window that fails to send
-// is kept and retried on the next flush, until it is a full evaluation window
-// past its end; by then the evaluator has judged it, so it is dropped.
+// intervalStart, then sends every unsent window.
 func (t *Throttler) flush(ctx context.Context, intervalStart time.Time) {
-	window := intervalStart.Truncate(t.cfg.EvaluationWindow)
+	t.collectCounters(intervalStart.Truncate(t.cfg.EvaluationWindow))
+	t.sendUnsent(ctx)
+}
+
+// collectCounters resets every buyer's counters to zero and adds what they
+// held to the window's unsent stats.
+func (t *Throttler) collectCounters(window time.Time) {
 	for buyerID, c := range *t.counters.Load() {
 		// Outcomes before total: the reverse of Record's order.
 		var s buyer.Stats
@@ -63,7 +67,12 @@ func (t *Throttler) flush(ctx context.Context, intervalStart time.Time) {
 		}
 		t.unsent[window][buyerID] = t.unsent[window][buyerID].Add(s)
 	}
+}
 
+// sendUnsent sends every unsent window to the store. A window that fails is
+// kept and retried on the next flush, until it is a full evaluation window
+// past its end; by then the evaluator has judged it, so it is dropped.
+func (t *Throttler) sendUnsent(ctx context.Context) {
 	// One deadline for all sends, so a store outage delays the next flush
 	// tick by at most StoreTimeout, however many windows are unsent.
 	ctx, cancel := context.WithTimeout(ctx, t.cfg.StoreTimeout)

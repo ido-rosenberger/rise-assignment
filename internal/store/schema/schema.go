@@ -15,10 +15,9 @@ import (
 
 // Keys. Stats keys are per window; the others are single keys.
 const (
-	// KeyState: hash buyer -> StateValue JSON. Read by pods.
+	// KeyState: hash buyer -> StateValue JSON. Written by the evaluator;
+	// pods read only the throttle rate from it.
 	KeyState = "throttle:state"
-	// KeyEval: hash buyer -> EvalValue JSON. Evaluator only.
-	KeyEval = "throttle:eval"
 	// KeyVersion: integer, incremented on every state write.
 	KeyVersion = "throttle:version"
 	// KeyLastWindow: unix seconds of the last evaluated window start.
@@ -83,16 +82,13 @@ func ParseStats(fields map[string]string) (stats map[string]buyer.Stats, invalid
 	return stats, invalid
 }
 
-// StateValue is the JSON stored per buyer in KeyState.
+// StateValue is the JSON stored per buyer in KeyState: the throttle rate
+// pods apply, plus the evaluator's accumulation (omitted when empty).
 type StateValue struct {
-	ThrottleRate float64 `json:"throttle_rate"`
-	Reason       string  `json:"reason"`
-}
-
-// EvalValue is the JSON stored per buyer in KeyEval.
-type EvalValue struct {
-	Accumulated        StatsValue `json:"accumulated"`
-	AccumulatedWindows int        `json:"accumulated_windows"`
+	ThrottleRate       float64    `json:"throttle_rate"`
+	Reason             string     `json:"reason"`
+	Accumulated        StatsValue `json:"accumulated,omitzero"`
+	AccumulatedWindows int        `json:"accumulated_windows,omitzero"`
 }
 
 // StatsValue is buyer.Stats with JSON names.

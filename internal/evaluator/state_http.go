@@ -2,9 +2,7 @@ package evaluator
 
 import (
 	"cmp"
-	"context"
 	"encoding/json"
-	"fmt"
 	"math"
 	"net/http"
 	"slices"
@@ -41,56 +39,38 @@ type WindowInfo struct {
 // throttle rate and reason, and its stats in the last evaluated window.
 func StateHandler(store Store) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		states, last, ok, err := consistentStates(r.Context(), store)
+		snap, err := store.Snapshot(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, "read snapshot: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		var stats map[string]buyer.Stats
-		if ok {
-			if stats, err = store.WindowStats(r.Context(), last); err != nil {
+		if !snap.LastWindow.IsZero() {
+			if stats, err = store.WindowStats(r.Context(), snap.LastWindow); err != nil {
 				http.Error(w, "read window stats: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
 		}
 
-		resp := StateResponse{Buyers: make([]BuyerState, 0, len(states))}
-		for id, st := range states {
-			bs := BuyerState{BuyerID: id, ThrottleRate: st.ThrottleRate, Reason: string(st.Reason)}
-			if ok {
-				bs.LastWindow = windowInfo(last, stats[id])
-			}
-			resp.Buyers = append(resp.Buyers, bs)
-		}
-		slices.SortFunc(resp.Buyers, func(a, b BuyerState) int { return cmp.Compare(a.BuyerID, b.BuyerID) })
-
 		w.Header().Set("Content-Type", "application/json")
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		enc.Encode(resp)
+		enc.Encode(stateResponse(snap, stats))
 	})
 }
 
-// consistentStates reads the states and the window they came from. The two
-// are separate reads, so it re-reads when an evaluation landed in between.
-func consistentStates(ctx context.Context, store Store) (map[string]State, time.Time, bool, error) {
-	for attempt := 0; ; attempt++ {
-		before, okBefore, err := store.LastWindow(ctx)
-		if err != nil {
-			return nil, time.Time{}, false, fmt.Errorf("read last window: %w", err)
+// stateResponse builds the GET /state body, buyers sorted by ID.
+func stateResponse(snap Snapshot, stats map[string]buyer.Stats) StateResponse {
+	resp := StateResponse{Buyers: make([]BuyerState, 0, len(snap.States))}
+	for id, st := range snap.States {
+		bs := BuyerState{BuyerID: id, ThrottleRate: st.ThrottleRate, Reason: string(st.Reason)}
+		if !snap.LastWindow.IsZero() {
+			bs.LastWindow = windowInfo(snap.LastWindow, stats[id])
 		}
-		states, err := store.States(ctx)
-		if err != nil {
-			return nil, time.Time{}, false, fmt.Errorf("read states: %w", err)
-		}
-		after, okAfter, err := store.LastWindow(ctx)
-		if err != nil {
-			return nil, time.Time{}, false, fmt.Errorf("read last window: %w", err)
-		}
-		if (okBefore == okAfter && before.Equal(after)) || attempt == 2 {
-			return states, after, okAfter, nil
-		}
+		resp.Buyers = append(resp.Buyers, bs)
 	}
+	slices.SortFunc(resp.Buyers, func(a, b BuyerState) int { return cmp.Compare(a.BuyerID, b.BuyerID) })
+	return resp
 }
 
 func windowInfo(start time.Time, s buyer.Stats) *WindowInfo {

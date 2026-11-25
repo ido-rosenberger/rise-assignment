@@ -31,7 +31,7 @@ func TestStateHandler(t *testing.T) {
 		"buyer_123": {ThrottleRate: 0.95, Reason: ReasonFailureRate},
 		"buyer_456": {ThrottleRate: 0.35, Reason: ReasonRecovering},
 	}
-	store.last, store.hasLast = minute(9), true
+	store.last = minute(9)
 	store.stats[minute(9)] = map[string]buyer.Stats{
 		"buyer_123": {Total: 200, Failed: 150, Timeouts: 10},
 		"buyer_456": {Total: 3, Timeouts: 1},
@@ -76,11 +76,11 @@ func TestStateHandlerBeforeFirstEvaluation(t *testing.T) {
 	}
 }
 
-// failingStore fails reading states.
+// failingStore fails reading the snapshot.
 type failingStore struct{ fakeStore }
 
-func (*failingStore) States(context.Context) (map[string]State, error) {
-	return nil, errors.New("redis down")
+func (*failingStore) Snapshot(context.Context) (Snapshot, error) {
+	return Snapshot{}, errors.New("redis down")
 }
 
 func TestStateHandlerStoreError(t *testing.T) {

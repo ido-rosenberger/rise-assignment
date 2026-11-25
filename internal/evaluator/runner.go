@@ -12,18 +12,24 @@ import (
 	"github.com/ido-rosenberger/rise-assignment/internal/config"
 )
 
-// Store is what the Runner needs from shared storage. internal/store
+// Store is what the evaluator needs from shared storage. internal/store
 // provides the Redis implementation.
 type Store interface {
+	// Snapshot returns every buyer's state and the window they came from,
+	// read atomically.
+	Snapshot(ctx context.Context) (Snapshot, error)
 	// WindowStats returns every buyer's stats for one window (empty if none).
 	WindowStats(ctx context.Context, windowStart time.Time) (map[string]buyer.Stats, error)
-	// States returns every known buyer's state.
-	States(ctx context.Context) (map[string]State, error)
-	// LastWindow returns the last evaluated window start; ok is false if none.
-	LastWindow(ctx context.Context) (windowStart time.Time, ok bool, err error)
 	// SaveStates atomically stores the states produced by evaluating
-	// windowStart and records windowStart as evaluated.
+	// windowStart and records windowStart as the last evaluated window.
 	SaveStates(ctx context.Context, windowStart time.Time, states map[string]State) error
+}
+
+// Snapshot is the stored evaluator state at one moment.
+type Snapshot struct {
+	States map[string]State
+	// LastWindow is the start of the last evaluated window; zero if none.
+	LastWindow time.Time
 }
 
 // RunnerConfig configures a Runner.
@@ -40,7 +46,7 @@ type RunnerConfig struct {
 }
 
 // Runner evaluates every buyer once per evaluation window: it reads the
-// window's stats and the previous states, applies Evaluate, and saves the
+// window's stats, applies Evaluate to the previous states, and saves the
 // result. Only one Runner may run against a store at a time.
 type Runner struct {
 	cfg   RunnerConfig
@@ -94,77 +100,97 @@ func (r *Runner) nextRun() time.Time {
 }
 
 // EvaluatePending evaluates every closed window not evaluated yet, oldest
-// first: each evaluation builds on the previous one's states, so the newest
-// data must be applied last. On first start only the latest closed window is
-// evaluated. A window is closed once its end + Grace has passed.
+// first. Each window's result is the next window's input, so the newest
+// data is applied last.
 func (r *Runner) EvaluatePending(ctx context.Context) error {
-	w := r.cfg.Rules.EvaluationWindow
-	latest := r.now().Add(-r.cfg.Grace).Add(-w).Truncate(w)
-
-	last, ok, err := r.store.LastWindow(ctx)
+	snap, err := r.store.Snapshot(ctx)
 	if err != nil {
-		return fmt.Errorf("read last window: %w", err)
+		return fmt.Errorf("read snapshot: %w", err)
 	}
-	from := latest
-	if ok {
-		// Truncate first: if the window size changed since last was stored,
-		// last may not sit on a boundary of the current window size.
-		from = last.Truncate(w).Add(w)
-	}
-	if oldest := latest.Add(-time.Duration(r.cfg.MaxCatchUpWindows-1) * w); from.Before(oldest) {
-		skipped := int(oldest.Sub(from) / w)
-		r.log.Warn("skipping windows older than catch-up limit", "skipped", skipped, "from", oldest)
-		from = oldest
-	}
-
-	for start := from; !start.After(latest); start = start.Add(w) {
-		if err := r.evaluateWindow(ctx, start); err != nil {
-			return err
+	states := snap.States
+	for _, windowStart := range r.windowsToEvaluate(snap.LastWindow) {
+		stats, err := r.store.WindowStats(ctx, windowStart)
+		if err != nil {
+			return fmt.Errorf("read stats of window %s: %w", windowStart.Format(time.RFC3339), err)
 		}
+		next, changes := r.evaluateAll(states, stats)
+		if err := r.store.SaveStates(ctx, windowStart, next); err != nil {
+			return fmt.Errorf("save states of window %s: %w", windowStart.Format(time.RFC3339), err)
+		}
+		r.logWindow(windowStart, len(next), changes) // only after the save succeeded
+		states = next
 	}
 	return nil
 }
 
-// evaluateWindow applies Evaluate to every buyer that has a state or stats
-// for this window. A known buyer without stats gets an empty window.
-func (r *Runner) evaluateWindow(ctx context.Context, windowStart time.Time) error {
-	stats, err := r.store.WindowStats(ctx, windowStart)
-	if err != nil {
-		return fmt.Errorf("read stats of window %s: %w", windowStart.Format(time.RFC3339), err)
+// windowsToEvaluate returns the window starts to evaluate now, oldest first:
+// every window after lastWindow whose end + Grace has passed, at most
+// MaxCatchUpWindows of them. With no lastWindow (first start), only the
+// latest closed window.
+func (r *Runner) windowsToEvaluate(lastWindow time.Time) []time.Time {
+	w := r.cfg.Rules.EvaluationWindow
+	latest := r.now().Add(-r.cfg.Grace).Add(-w).Truncate(w)
+
+	from := latest
+	if !lastWindow.IsZero() {
+		// Truncate first: if the window size changed since lastWindow was
+		// stored, it may not sit on a boundary of the current window size.
+		from = lastWindow.Truncate(w).Add(w)
 	}
-	prev, err := r.store.States(ctx)
-	if err != nil {
-		return fmt.Errorf("read states: %w", err)
+	if oldest := latest.Add(-time.Duration(r.cfg.MaxCatchUpWindows-1) * w); from.Before(oldest) {
+		r.log.Warn("skipping windows older than catch-up limit", "skipped", int(oldest.Sub(from)/w), "from", oldest)
+		from = oldest
 	}
 
+	var windows []time.Time
+	for start := from; !start.After(latest); start = start.Add(w) {
+		windows = append(windows, start)
+	}
+	return windows
+}
+
+// change is one buyer whose throttle rate or reason changed in a window.
+type change struct {
+	buyerID       string
+	windowStats   buyer.Stats
+	before, after State
+}
+
+// evaluateAll applies Evaluate to every buyer that has a state or stats for
+// this window (a known buyer without stats gets an empty window). It returns
+// the new states and the buyers whose throttle rate or reason changed.
+func (r *Runner) evaluateAll(prev map[string]State, stats map[string]buyer.Stats) (map[string]State, []change) {
 	next := make(map[string]State, len(prev)+len(stats))
-	changed := 0
+	var changes []change
 	for _, buyerID := range unionKeys(prev, stats) {
 		before, windowStats := prev[buyerID], stats[buyerID]
 		after := Evaluate(before, windowStats, r.cfg.Rules)
 		next[buyerID] = after
 		if after.ThrottleRate != before.ThrottleRate || after.Reason != before.Reason {
-			changed++
-			r.log.Info("throttle state changed",
-				"buyer", buyerID,
-				"window", windowStart.Format(time.TimeOnly),
-				"total", windowStats.Total,
-				"failed", windowStats.Failed,
-				"timeouts", windowStats.Timeouts,
-				// Decision may use this window merged with earlier small ones.
-				"accumulated_total", before.Accumulated.Total,
-				"accumulated_windows", before.AccumulatedWindows,
-				"from", before.ThrottleRate,
-				"to", after.ThrottleRate,
-				"reason", string(after.Reason))
+			changes = append(changes, change{buyerID, windowStats, before, after})
 		}
 	}
+	return next, changes
+}
 
-	if err := r.store.SaveStates(ctx, windowStart, next); err != nil {
-		return fmt.Errorf("save states of window %s: %w", windowStart.Format(time.RFC3339), err)
+// logWindow logs one line per changed buyer and a summary for the window.
+func (r *Runner) logWindow(windowStart time.Time, buyers int, changes []change) {
+	window := windowStart.Format(time.TimeOnly)
+	for _, c := range changes {
+		r.log.Info("throttle state changed",
+			"buyer", c.buyerID,
+			"window", window,
+			"total", c.windowStats.Total,
+			"failed", c.windowStats.Failed,
+			"timeouts", c.windowStats.Timeouts,
+			// The decision may use this window merged with earlier small ones.
+			"accumulated_total", c.before.Accumulated.Total,
+			"accumulated_windows", c.before.AccumulatedWindows,
+			"from", c.before.ThrottleRate,
+			"to", c.after.ThrottleRate,
+			"reason", string(c.after.Reason))
 	}
-	r.log.Info("window evaluated", "window", windowStart.Format(time.TimeOnly), "buyers", len(next), "changed", changed)
-	return nil
+	r.log.Info("window evaluated", "window", window, "buyers", buyers, "changed", len(changes))
 }
 
 // unionKeys returns the keys of a and b, sorted so logs are stable.

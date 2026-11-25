@@ -15,12 +15,11 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,6 +27,7 @@ import (
 
 	"github.com/ido-rosenberger/rise-assignment/internal/auction"
 	"github.com/ido-rosenberger/rise-assignment/internal/config"
+	"github.com/ido-rosenberger/rise-assignment/internal/serve"
 	"github.com/ido-rosenberger/rise-assignment/throttler"
 	"github.com/ido-rosenberger/rise-assignment/throttler/redisstore"
 )
@@ -39,6 +39,7 @@ func main() {
 		log.Error("auction pod stopped", "err", err)
 		os.Exit(1)
 	}
+	log.Info("auction pod stopped")
 }
 
 func run(log *slog.Logger) error {
@@ -65,12 +66,8 @@ func run(log *slog.Logger) error {
 
 	traffic := &auction.Traffic{}
 	auctioneer := &auction.Auctioneer{
-		Throttler: th,
-		Client: &http.Client{Transport: &http.Transport{
-			MaxIdleConns:        1000,
-			MaxIdleConnsPerHost: 1000, // default 2 would reopen connections constantly
-			IdleConnTimeout:     90 * time.Second,
-		}},
+		Throttler:    th,
+		Client:       newBuyerClient(),
 		BuyerBaseURL: buyerBaseURL,
 		Timeout:      buyerTimeout,
 		Traffic:      traffic,
@@ -83,31 +80,27 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	throttlerDone := make(chan struct{})
-	go func() { th.Run(ctx); close(throttlerDone) }()
-	go logTraffic(ctx, traffic, window, log)
+	var background sync.WaitGroup
+	background.Go(func() { th.Run(ctx) })
+	background.Go(func() { logTraffic(ctx, traffic, window, log) })
 
-	serverErr := make(chan error, 1)
-	go func() { serverErr <- server.ListenAndServe() }()
 	log.Info("auction pod started", "listen", listenAddr, "redis", redisAddr, "buyers", buyerBaseURL,
 		"buyer_timeout", buyerTimeout, "window", window)
+	err = serve.Until(ctx, server)
+	stop()            // if the server failed, stop background work too
+	background.Wait() // includes the throttler's final stats flush
+	return err
+}
 
-	select {
-	case <-ctx.Done():
-	case err := <-serverErr:
-		stop()
-		<-throttlerDone
-		return fmt.Errorf("http server: %w", err)
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Warn("http shutdown", "err", err)
-	}
-	<-throttlerDone // final stats flush
-	log.Info("auction pod stopped")
-	return nil
+// newBuyerClient returns the HTTP client for buyer calls. The default of 2
+// idle connections per host would reopen connections constantly at auction
+// rates; the per-call deadline comes from the auction context.
+func newBuyerClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		MaxIdleConns:        1000,
+		MaxIdleConnsPerHost: 1000,
+		IdleConnTimeout:     90 * time.Second,
+	}}
 }
 
 // logTraffic logs per-buyer traffic once per evaluation window.

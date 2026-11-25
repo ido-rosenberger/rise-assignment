@@ -48,15 +48,16 @@ type Outcome struct {
 	Skipped int  `json:"skipped"`
 }
 
-// Run holds one auction among buyerIDs.
+// Run holds one auction among buyerIDs: skipped buyers are counted, the
+// others are called in parallel under one deadline, and the highest bid wins.
 func (a *Auctioneer) Run(parent context.Context, buyerIDs []string) Outcome {
 	ctx, cancel := context.WithTimeout(parent, a.Timeout)
 	defer cancel()
 
 	var (
-		mu  sync.Mutex
 		out Outcome
 		wg  sync.WaitGroup
+		mu  sync.Mutex // guards out.Winner
 	)
 	for _, id := range buyerIDs {
 		if !a.Throttler.ShouldCall(id) {
@@ -68,14 +69,7 @@ func (a *Auctioneer) Run(parent context.Context, buyerIDs []string) Outcome {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			bid, result := a.call(ctx, id)
-			if parent.Err() != nil {
-				// The auction itself was canceled (client gone, shutdown):
-				// not the buyer's fault, so do not count it.
-				return
-			}
-			a.Throttler.Record(id, result)
-			a.Traffic.add(id, outcomeFor(result))
+			bid := a.callAndRecord(parent, ctx, id)
 			if bid == nil {
 				return
 			}
@@ -88,6 +82,19 @@ func (a *Auctioneer) Run(parent context.Context, buyerIDs []string) Outcome {
 	}
 	wg.Wait()
 	return out
+}
+
+// callAndRecord calls one buyer and records the result with the throttler.
+// If the auction itself was canceled (client gone, shutdown), the result is
+// not the buyer's fault and is not recorded.
+func (a *Auctioneer) callAndRecord(parent, ctx context.Context, buyerID string) *Bid {
+	bid, result := a.call(ctx, buyerID)
+	if parent.Err() != nil {
+		return nil
+	}
+	a.Throttler.Record(buyerID, result)
+	a.Traffic.add(buyerID, outcomeFor(result))
+	return bid
 }
 
 // call asks one buyer for a bid and classifies the result: a missed

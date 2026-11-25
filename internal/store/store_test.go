@@ -60,13 +60,14 @@ func TestWindowStats(t *testing.T) {
 	}
 }
 
-func TestSaveAndLoadStates(t *testing.T) {
+func TestSaveAndSnapshot(t *testing.T) {
 	mr, client := newRedis(t)
 	s := New(client, quietLogger)
 	ctx := context.Background()
 
-	if _, ok, err := s.LastWindow(ctx); err != nil || ok {
-		t.Fatalf("LastWindow before any save: ok=%v err=%v", ok, err)
+	snap, err := s.Snapshot(ctx)
+	if err != nil || len(snap.States) != 0 || !snap.LastWindow.IsZero() {
+		t.Fatalf("snapshot before any save = %+v, %v; want empty", snap, err)
 	}
 
 	states := map[string]evaluator.State{
@@ -83,25 +84,28 @@ func TestSaveAndLoadStates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.States(ctx)
+	snap, err = s.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != len(states) {
-		t.Fatalf("got %d states, want %d", len(got), len(states))
+	if !snap.LastWindow.Equal(window) {
+		t.Fatalf("LastWindow = %v, want %v", snap.LastWindow, window)
+	}
+	if len(snap.States) != len(states) {
+		t.Fatalf("got %d states, want %d", len(snap.States), len(states))
 	}
 	for id, want := range states {
-		if got[id] != want {
-			t.Errorf("%s = %+v, want %+v", id, got[id], want)
+		if snap.States[id] != want {
+			t.Errorf("%s = %+v, want %+v", id, snap.States[id], want)
 		}
-	}
-
-	last, ok, err := s.LastWindow(ctx)
-	if err != nil || !ok || !last.Equal(window) {
-		t.Fatalf("LastWindow = %v, %v, %v; want %v", last, ok, err, window)
 	}
 	if v, _ := mr.Get(schema.KeyVersion); v != "1" {
 		t.Fatalf("version = %q, want 1", v)
+	}
+
+	// An open buyer's JSON has no accumulation fields (omitzero).
+	if got := mr.HGet(schema.KeyState, "b3"); got != `{"throttle_rate":0,"reason":""}` {
+		t.Fatalf("open buyer stored as %s", got)
 	}
 
 	// A second save bumps the version again.
@@ -113,19 +117,18 @@ func TestSaveAndLoadStates(t *testing.T) {
 	}
 }
 
-func TestStatesSkipsCorruptEntries(t *testing.T) {
+func TestSnapshotSkipsCorruptEntries(t *testing.T) {
 	mr, client := newRedis(t)
 	s := New(client, quietLogger)
 	mr.HSet(schema.KeyState, "bad", "{")
 	mr.HSet(schema.KeyState, "b1", `{"throttle_rate":0.85,"reason":"recovering"}`)
-	mr.HSet(schema.KeyEval, "b1", "not json")
 
-	got, err := s.States(context.Background())
+	snap, err := s.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (evaluator.State{ThrottleRate: 0.85, Reason: evaluator.ReasonRecovering}); got["b1"] != want || len(got) != 1 {
-		t.Fatalf("got %+v, want only b1 = %+v", got, want)
+	if want := (evaluator.State{ThrottleRate: 0.85, Reason: evaluator.ReasonRecovering}); snap.States["b1"] != want || len(snap.States) != 1 {
+		t.Fatalf("got %+v, want only b1 = %+v", snap.States, want)
 	}
 }
 
@@ -136,8 +139,8 @@ func TestSaveStatesWithNoBuyers(t *testing.T) {
 	if err := s.SaveStates(ctx, window, nil); err != nil {
 		t.Fatal(err)
 	}
-	if last, ok, _ := s.LastWindow(ctx); !ok || !last.Equal(window) {
-		t.Fatalf("LastWindow = %v, %v; want %v", last, ok, window)
+	if snap, _ := s.Snapshot(ctx); !snap.LastWindow.Equal(window) {
+		t.Fatalf("LastWindow = %v, want %v", snap.LastWindow, window)
 	}
 }
 
@@ -149,11 +152,8 @@ func TestStoreErrorsWhenRedisDown(t *testing.T) {
 	if _, err := s.WindowStats(ctx, window); err == nil {
 		t.Error("WindowStats: want error")
 	}
-	if _, err := s.States(ctx); err == nil {
-		t.Error("States: want error")
-	}
-	if _, _, err := s.LastWindow(ctx); err == nil {
-		t.Error("LastWindow: want error")
+	if _, err := s.Snapshot(ctx); err == nil {
+		t.Error("Snapshot: want error")
 	}
 	if err := s.SaveStates(ctx, window, map[string]evaluator.State{"b1": {}}); err == nil {
 		t.Error("SaveStates: want error")

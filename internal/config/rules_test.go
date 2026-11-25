@@ -1,16 +1,17 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
-// fakeEnv turns a map into a lookupFunc.
-func fakeEnv(m map[string]string) lookupFunc {
-	return func(key string) (string, bool) {
-		v, ok := m[key]
-		return v, ok
+// setEnv sets env vars for the duration of the test (t.Setenv restores them).
+func setEnv(t *testing.T, vars map[string]string) {
+	t.Helper()
+	for k, v := range vars {
+		t.Setenv(k, v)
 	}
 }
 
@@ -33,8 +34,24 @@ func TestDefaultRulesMatchSpec(t *testing.T) {
 	}
 }
 
+// clearRuleEnv unsets every rule env var for the test and restores them
+// after, so the test does not depend on the developer's shell.
+func clearRuleEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		EnvFailureRateThreshold, EnvTimeoutRateThreshold, EnvMinSampleSize, EnvBlockLevel,
+		EnvRecoveryStepSize, EnvEvaluationWindow, EnvMaxAccumulatedWindows,
+	} {
+		if v, ok := os.LookupEnv(key); ok {
+			os.Unsetenv(key)
+			t.Cleanup(func() { os.Setenv(key, v) })
+		}
+	}
+}
+
 func TestLoadRulesNoEnvGivesDefaults(t *testing.T) {
-	r, err := loadRules(fakeEnv(nil))
+	clearRuleEnv(t)
+	r, err := LoadRules()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -44,7 +61,7 @@ func TestLoadRulesNoEnvGivesDefaults(t *testing.T) {
 }
 
 func TestLoadRulesOverrides(t *testing.T) {
-	r, err := loadRules(fakeEnv(map[string]string{
+	setEnv(t, map[string]string{
 		EnvFailureRateThreshold:  "0.5",
 		EnvTimeoutRateThreshold:  "0.2",
 		EnvMinSampleSize:         "50",
@@ -52,7 +69,8 @@ func TestLoadRulesOverrides(t *testing.T) {
 		EnvRecoveryStepSize:      "0.3",
 		EnvEvaluationWindow:      "10s",
 		EnvMaxAccumulatedWindows: "3",
-	}))
+	})
+	r, err := LoadRules()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -71,10 +89,11 @@ func TestLoadRulesOverrides(t *testing.T) {
 }
 
 func TestLoadRulesReportsAllParseErrors(t *testing.T) {
-	_, err := loadRules(fakeEnv(map[string]string{
+	setEnv(t, map[string]string{
 		EnvMinSampleSize:    "lots",
 		EnvEvaluationWindow: "1 minute",
-	}))
+	})
+	_, err := LoadRules()
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -115,7 +134,8 @@ func TestValidateRejectsOutOfRange(t *testing.T) {
 }
 
 func TestLoadRulesRejectsInvalidValue(t *testing.T) {
-	_, err := loadRules(fakeEnv(map[string]string{EnvBlockLevel: "1.0"}))
+	t.Setenv(EnvBlockLevel, "1.0")
+	_, err := LoadRules()
 	if err == nil {
 		t.Fatal("block level 1.0 must be rejected")
 	}

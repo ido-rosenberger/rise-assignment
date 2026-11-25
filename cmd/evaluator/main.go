@@ -12,12 +12,12 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +25,7 @@ import (
 
 	"github.com/ido-rosenberger/rise-assignment/internal/config"
 	"github.com/ido-rosenberger/rise-assignment/internal/evaluator"
+	"github.com/ido-rosenberger/rise-assignment/internal/serve"
 	"github.com/ido-rosenberger/rise-assignment/internal/store"
 	"github.com/ido-rosenberger/rise-assignment/internal/store/schema"
 )
@@ -35,6 +36,7 @@ func main() {
 		log.Error("evaluator stopped", "err", err)
 		os.Exit(1)
 	}
+	log.Info("evaluator stopped")
 }
 
 func run(log *slog.Logger) error {
@@ -71,10 +73,8 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	serverErr := make(chan error, 1)
-	go func() { serverErr <- server.ListenAndServe() }()
-	runnerDone := make(chan struct{})
-	go func() { runner.Run(ctx); close(runnerDone) }()
+	var background sync.WaitGroup
+	background.Go(func() { runner.Run(ctx) })
 
 	log.Info("evaluator started",
 		"redis", redisAddr,
@@ -88,19 +88,8 @@ func run(log *slog.Logger) error {
 		"recovery_step_size", rules.RecoveryStepSize,
 		"max_accumulated_windows", rules.MaxAccumulatedWindows)
 
-	select {
-	case <-ctx.Done():
-	case err := <-serverErr:
-		stop()
-		<-runnerDone
-		return fmt.Errorf("http server: %w", err)
-	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Warn("http shutdown", "err", err)
-	}
-	<-runnerDone
-	log.Info("evaluator stopped")
-	return nil
+	err = serve.Until(ctx, server)
+	stop() // if the server failed, stop the runner too
+	background.Wait()
+	return err
 }
