@@ -203,6 +203,6 @@ Where each part of the design lives:
 ## What I would add for production
 
 - **Prometheus server + dashboard** scraping `/metrics`, and pod-side metrics for what only pods see (skipped calls, call latency).
-- **A guard for two evaluators**: `WATCH throttle:last_window` around the save, so a second instance's write aborts instead of applying a window twice.
+- **A guard for two evaluators**: `WATCH throttle:last_window` around the save, so a second instance's write aborts instead of overwriting newer state with an older window's.
 - **Per-buyer rules** (for example, different thresholds for small buyers).
 - **Push updates** (Redis pub/sub) next to polling, to cut the ~1s propagation lag.

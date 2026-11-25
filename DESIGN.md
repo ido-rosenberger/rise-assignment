@@ -49,5 +49,5 @@ Only the evaluator writes state, so pods may lag (~1s) but never disagree. All p
 - **Polling, not push**: ~1s lag is fine for once-per-window changes; the version key keeps it cheap.
 - **Stats can be lost or doubled slightly**: ~1s on a pod crash; one flush if a `MULTI` reply is lost and retried. Fine for health estimates.
 - **One hash per window**: no buyer registry, one read per evaluation; on Redis Cluster per-buyer keys would spread load.
-- **One evaluator**: two would apply a window twice; `WATCH throttle:last_window` would make that safe.
+- **One evaluator**: a second one (e.g. overlapping in a rolling deploy) cannot apply a window twice, since states and `last_window` are always read and written together, but the slower one's save wins and state may briefly step back a window. Run one replica; `WATCH throttle:last_window` would make extra ones no-ops.
 - **Metrics only from the evaluator**: it already has every number per window, so pods stay metrics-free; skipped-call counts exist only in pods and are in pod logs, not metrics.
