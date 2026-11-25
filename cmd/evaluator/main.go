@@ -5,7 +5,7 @@
 // Environment:
 //
 //	REDIS_ADDR                 Redis address (default localhost:6379)
-//	LISTEN_ADDR                HTTP address for GET /state (default :8080)
+//	LISTEN_ADDR                HTTP address for GET /state and GET /metrics (default :8080)
 //	EVALUATOR_GRACE            wait after a window ends before evaluating it (default 5s)
 //	THROTTLE_*                 throttling rules, see internal/config
 package main
@@ -21,6 +21,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/ido-rosenberger/rise-assignment/internal/config"
@@ -55,11 +58,17 @@ func run(log *slog.Logger) error {
 	defer client.Close()
 	st := store.New(client, log)
 
+	// Own registry (not the global default): only metrics this binary defines,
+	// plus the standard Go runtime and process metrics.
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+
 	runner, err := evaluator.NewRunner(evaluator.RunnerConfig{
 		Rules:             rules,
 		Grace:             grace,
 		MaxCatchUpWindows: schema.StatsRetentionWindows,
 		Logger:            log,
+		Metrics:           evaluator.NewMetrics(reg),
 	}, st)
 	if err != nil {
 		return fmt.Errorf("create runner: %w", err)
@@ -67,6 +76,7 @@ func run(log *slog.Logger) error {
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /state", evaluator.StateHandler(st))
+	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	server := &http.Server{Addr: listenAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
 	// Stop cleanly on Ctrl+C or `docker stop` (SIGTERM).

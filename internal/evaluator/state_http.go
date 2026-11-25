@@ -74,12 +74,11 @@ func stateResponse(snap Snapshot, stats map[string]buyer.Stats) StateResponse {
 }
 
 func windowInfo(start time.Time, s buyer.Stats) *WindowInfo {
-	info := &WindowInfo{Start: start, Total: s.Total, Failed: s.Failed, Timeouts: s.Timeouts}
-	if s.Total > 0 {
-		info.FailureRate = round4(float64(s.Failed) / float64(s.Total))
-		info.TimeoutRate = round4(float64(s.Timeouts) / float64(s.Total))
+	failureRate, timeoutRate := errorRates(s)
+	return &WindowInfo{
+		Start: start, Total: s.Total, Failed: s.Failed, Timeouts: s.Timeouts,
+		FailureRate: round4(failureRate), TimeoutRate: round4(timeoutRate),
 	}
-	return info
 }
 
 func round4(x float64) float64 { return math.Round(x*1e4) / 1e4 }

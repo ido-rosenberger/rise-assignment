@@ -43,6 +43,8 @@ type RunnerConfig struct {
 	// stats have expired from the store anyway.
 	MaxCatchUpWindows int
 	Logger            *slog.Logger
+	// Metrics, if set, is updated after every evaluated window.
+	Metrics *Metrics
 }
 
 // Runner evaluates every buyer once per evaluation window: it reads the
@@ -117,7 +119,9 @@ func (r *Runner) EvaluatePending(ctx context.Context) error {
 		if err := r.store.SaveStates(ctx, windowStart, next); err != nil {
 			return fmt.Errorf("save states of window %s: %w", windowStart.Format(time.RFC3339), err)
 		}
-		r.logWindow(windowStart, len(next), changes) // only after the save succeeded
+		// Logs and metrics only after the save succeeded.
+		r.logWindow(windowStart, len(next), changes)
+		r.cfg.Metrics.observeWindow(windowStart, next, stats)
 		states = next
 	}
 	return nil

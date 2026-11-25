@@ -13,11 +13,11 @@
               │ throttle:last_window start of the last evaluated window
               └─────────────────────────────────────────────┘
                                ▲ once per window: stats + states -> Evaluate -> save
-                         evaluator (x 1) ── GET /state
+                         evaluator (x 1) ── GET /state, GET /metrics
 ```
 
 - **`throttler/`**: public library inside every auction pod. `ShouldCall` and `Record` touch only local memory; `Run` syncs with Redis in the background (adapter: `throttler/redisstore`).
-- **`internal/evaluator`**: `Evaluate(prev, windowStats, rules) -> next` is every spec rule as one pure function; `Runner` applies it to every buyer once per window; `GET /state` returns each buyer's state and last-window counts and error rates.
+- **`internal/evaluator`**: `Evaluate(prev, windowStats, rules) -> next` is every spec rule as one pure function; `Runner` applies it to every buyer once per window; `GET /state` returns each buyer's state and last-window counts and error rates; `GET /metrics` exposes throttle rates, error rates and request counters to Prometheus.
 - **`internal/store`**: the evaluator's Redis adapter; `schema/` defines the Redis layout for both sides. Function-level links: README, "Code map".
 
 ## Data flow
@@ -50,4 +50,4 @@ Only the evaluator writes state, so pods may lag (~1s) but never disagree. All p
 - **Stats can be lost or doubled slightly**: ~1s on a pod crash; one flush if a `MULTI` reply is lost and retried. Fine for health estimates.
 - **One hash per window**: no buyer registry, one read per evaluation; on Redis Cluster per-buyer keys would spread load.
 - **One evaluator**: two would apply a window twice; `WATCH throttle:last_window` would make that safe.
-- **`/state` is a snapshot**: no history or alerts; production would add Prometheus metrics.
+- **Metrics only from the evaluator**: it already has every number per window, so pods stay metrics-free; skipped-call counts exist only in pods and are in pod logs, not metrics.

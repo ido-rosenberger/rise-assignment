@@ -75,6 +75,27 @@ curl localhost:8088/state
 }
 ```
 
+Prometheus metrics (evaluator, updated after every evaluated window):
+
+```sh
+curl -s localhost:8088/metrics | grep ^throttling_
+```
+
+```
+throttling_buyer_throttle_rate{buyer="buyer_flaky"} 0.95
+throttling_buyer_failure_rate{buyer="buyer_flaky"} 0.916
+throttling_buyer_timeout_rate{buyer="buyer_slow"} 0.019
+throttling_buyer_requests_total{buyer="buyer_flaky",result="failed"} 2960
+throttling_evaluator_windows_total 6
+```
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `throttling_buyer_throttle_rate{buyer}` | gauge | Current throttle rate |
+| `throttling_buyer_failure_rate{buyer}`, `throttling_buyer_timeout_rate{buyer}` | gauge | Error rates in the last evaluated window |
+| `throttling_buyer_requests_total{buyer,result}` | counter | Requests across all pods by `ok` / `failed` / `timeout`; use `rate()` for request rates |
+| `throttling_evaluator_windows_total`, `throttling_evaluator_last_window_timestamp_seconds` | counter, gauge | Evaluator progress (alert if the timestamp stops moving) |
+
 ### Break a buyer yourself
 
 The simulator has a live control API (port 9000):
@@ -141,7 +162,7 @@ No Docker or Redis is needed for the unit tests: Redis is replaced by an in-memo
 buyer/                  shared domain type: buyer.Stats
 throttler/              public library for auction pods: ShouldCall, Record, Run
 throttler/redisstore/   its Redis adapter
-internal/evaluator/     Evaluate (pure rules), Runner (per-window loop), GET /state
+internal/evaluator/     Evaluate (pure rules), Runner (per-window loop), GET /state, metrics
 internal/store/         evaluator's Redis adapter; schema/ = Redis layout
 internal/config/        rules + env vars
 internal/auction/       demo pod: POST /auction fan-out to buyers
@@ -164,6 +185,7 @@ Where each part of the design lives:
 | Evaluator loop | `EvaluatePending` [runner.go:105](internal/evaluator/runner.go#L105), `windowsToEvaluate` [runner.go:130](internal/evaluator/runner.go#L130), `evaluateAll` [runner.go:162](internal/evaluator/runner.go#L162) |
 | Evaluator Redis adapter | `Snapshot` [store.go:60](internal/store/store.go#L60), `SaveStates` [store.go:102](internal/store/store.go#L102); key layout [schema.go:20](internal/store/schema/schema.go#L20) |
 | `GET /state` | `StateHandler` [state_http.go:40](internal/evaluator/state_http.go#L40) |
+| Prometheus metrics | `NewMetrics` [metrics.go:23](internal/evaluator/metrics.go#L23), `observeWindow` [metrics.go:57](internal/evaluator/metrics.go#L57); served at `GET /metrics` |
 | Demo auction fan-out | `Auctioneer.Run` [auction.go:53](internal/auction/auction.go#L53), result classification `call` [auction.go:102](internal/auction/auction.go#L102) |
 | End-to-end test (2 pods + evaluator) | [e2e_test.go](internal/evaluator/e2e_test.go#L1) |
 
@@ -171,7 +193,7 @@ Where each part of the design lives:
 
 - **Go.**
 - **`GET /state`** on the evaluator, in the spec's format.
-- **Per-buyer metrics** (throttle rate, error rates, request counts) are in `GET /state` under `last_window`. Kept as JSON read from Redis for simplicity: no metrics stack to run.
+- **Per-buyer metrics** (throttle rate, error rates, request counts): Prometheus format at `GET /metrics` on the evaluator, and the same numbers as JSON in `GET /state` under `last_window`. The evaluator already computes them each window, so pods need no metrics code.
 - **Version key** (`throttle:version`): pods check one small number each second and read the full state only when it changed. Redis load stays flat as pods and buyers grow.
 - **Catch-up after evaluator downtime**: missed windows are evaluated oldest first, so a restart gives the same result as never stopping, and the same window is never evaluated twice.
 - **Accumulation of small windows**: a blocked buyer receives only 5% of its traffic, so its windows are often below the minimum sample. They are merged until there is enough data, so the buyer neither recovers on no evidence nor stays blocked forever (details in DESIGN.md).
@@ -180,7 +202,7 @@ Where each part of the design lives:
 
 ## What I would add for production
 
-- **Prometheus `/metrics`** on the evaluator and pods, for history, dashboards and alerts (skipped-call counts only exist in pods).
+- **Prometheus server + dashboard** scraping `/metrics`, and pod-side metrics for what only pods see (skipped calls, call latency).
 - **A guard for two evaluators**: `WATCH throttle:last_window` around the save, so a second instance's write aborts instead of applying a window twice.
 - **Per-buyer rules** (for example, different thresholds for small buyers).
 - **Push updates** (Redis pub/sub) next to polling, to cut the ~1s propagation lag.
