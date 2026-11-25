@@ -25,6 +25,21 @@
 - **`internal/store`**: the evaluator's Redis adapter. `internal/store/schema` is the Redis layout, shared by both adapters.
 - **Demo**: `internal/auction` (pod fan-out over HTTP), `internal/simulator` (traffic + fake buyers), `cmd/*` binaries, docker-compose.
 
+## Code map
+
+| What | Where |
+|---|---|
+| Spec rules (pure function) | `Evaluate` [evaluator.go:47](internal/evaluator/evaluator.go#L47): `pickSample` [evaluator.go:75](internal/evaluator/evaluator.go#L75), `judge` [evaluator.go:83](internal/evaluator/evaluator.go#L83), `capReached` [evaluator.go:93](internal/evaluator/evaluator.go#L93), `violation` [evaluator.go:102](internal/evaluator/evaluator.go#L102), `stepDown` [evaluator.go:117](internal/evaluator/evaluator.go#L117); tests in [evaluator_test.go](internal/evaluator/evaluator_test.go#L1) |
+| Configurable defaults | `DefaultRules` [rules.go:52](internal/config/rules.go#L52), `Validate` [rules.go:103](internal/config/rules.go#L103) |
+| Per-request check | `ShouldCall` [throttler.go:155](throttler/throttler.go#L155), `Record` [throttler.go:165](throttler/throttler.go#L165) |
+| Pod background loop | `Run` [run.go:14](throttler/run.go#L14): `collectCounters` [run.go:55](throttler/run.go#L55), `sendUnsent` [run.go:75](throttler/run.go#L75), `refresh` [run.go:96](throttler/run.go#L96) |
+| Pod Redis adapter | `AddStats` [redisstore.go:62](throttler/redisstore/redisstore.go#L62), `StateVersion` [redisstore.go:93](throttler/redisstore/redisstore.go#L93), `ThrottleRates` [redisstore.go:106](throttler/redisstore/redisstore.go#L106) |
+| Evaluator loop | `EvaluatePending` [runner.go:105](internal/evaluator/runner.go#L105), `windowsToEvaluate` [runner.go:130](internal/evaluator/runner.go#L130), `evaluateAll` [runner.go:162](internal/evaluator/runner.go#L162) |
+| Evaluator Redis adapter | `Snapshot` [store.go:60](internal/store/store.go#L60), `SaveStates` [store.go:102](internal/store/store.go#L102); key layout [schema.go:20](internal/store/schema/schema.go#L20) |
+| `GET /state` | `StateHandler` [state_http.go:40](internal/evaluator/state_http.go#L40) |
+| Demo auction fan-out | `Auctioneer.Run` [auction.go:53](internal/auction/auction.go#L53), result classification `call` [auction.go:102](internal/auction/auction.go#L102) |
+| End-to-end test (2 pods + evaluator) | [e2e_test.go](internal/evaluator/e2e_test.go#L1) |
+
 ## How stats and state flow
 
 1. **Stats up.** `Record` increments in-memory counters per buyer. Every second, flush swaps them to zero and adds them to `stats:{window}` with `HINCRBY` in one `MULTI`. Every pod adds into the same hash, so Redis sums them across pods. Flush ticks fall on whole seconds and the window is a multiple of a second, so each flush lands entirely in one window and `Record` never reads the clock (cost: requests in the few ms between a window boundary and the flush wake-up count in the previous window). A failed send is kept and retried, and dropped once the evaluator has already judged that window.

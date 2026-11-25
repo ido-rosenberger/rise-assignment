@@ -53,6 +53,7 @@ type Incident struct {
 // Duration is a time.Duration written as a string in JSON ("30s").
 type Duration time.Duration
 
+// UnmarshalJSON parses a duration string such as "30s".
 func (d *Duration) UnmarshalJSON(b []byte) error {
 	var s string
 	if err := json.Unmarshal(b, &s); err != nil {
@@ -66,6 +67,7 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// MarshalJSON writes the duration as a string such as "30s".
 func (d Duration) MarshalJSON() ([]byte, error) {
 	return json.Marshal(time.Duration(d).String())
 }

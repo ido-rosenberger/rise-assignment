@@ -9,7 +9,7 @@ Design and decisions: [DESIGN.md](DESIGN.md).
 Requirements: Docker with Compose.
 
 ```sh
-docker compose up --build
+docker compose up --build      # or, with the older standalone tool: docker-compose up --build
 ```
 
 This starts Redis, the evaluator, two auction pods and a simulator (traffic + fake buyers). The demo uses **10-second evaluation windows** (spec default: 1 minute), so one block-and-recovery cycle takes about 2 minutes.

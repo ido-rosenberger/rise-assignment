@@ -98,10 +98,12 @@ type StatsValue struct {
 	Timeouts int64 `json:"timeouts"`
 }
 
+// ToStatsValue converts buyer.Stats to its JSON form.
 func ToStatsValue(s buyer.Stats) StatsValue {
 	return StatsValue{Total: s.Total, Failed: s.Failed, Timeouts: s.Timeouts}
 }
 
+// Stats converts the JSON form back to buyer.Stats.
 func (v StatsValue) Stats() buyer.Stats {
 	return buyer.Stats{Total: v.Total, Failed: v.Failed, Timeouts: v.Timeouts}
 }

@@ -23,11 +23,12 @@ import (
 type Result int
 
 const (
-	ResultOK Result = iota
-	ResultFailed
-	ResultTimeout
+	ResultOK      Result = iota // the buyer answered (2xx)
+	ResultFailed                // the buyer returned an error
+	ResultTimeout               // the buyer missed the auction deadline
 )
 
+// String returns the result as used in logs: ok, failed or timeout.
 func (r Result) String() string {
 	switch r {
 	case ResultOK:

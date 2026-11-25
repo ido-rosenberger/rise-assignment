@@ -15,3 +15,6 @@ coverage.html
 # Local Claude settings / personal preferences
 .claude/settings.local.json
 CLAUDE.local.md
+
+# Assignment spec: kept locally, not published
+Backend Developer Home Assignment - Rise.md

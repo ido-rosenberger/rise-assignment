@@ -97,10 +97,10 @@ func TestEndToEndBlockAndRecover(t *testing.T) {
 		return float64(n) / 2000
 	}
 
-	// Phase 1: failing buyer gets blocked; both pods converge on ~5% calls.
+	// Step 1: failing buyer gets blocked; both pods converge on ~5% calls.
 	traffic(func() bool { return called(pods[0]) < 0.15 && called(pods[1]) < 0.15 })
 
-	// Phase 2: buyer is healthy again; pods see it fully open eventually.
+	// Step 2: buyer is healthy again; pods see it fully open eventually.
 	failing = false
 	traffic(func() bool { return called(pods[0]) == 1 && called(pods[1]) == 1 })
 }
